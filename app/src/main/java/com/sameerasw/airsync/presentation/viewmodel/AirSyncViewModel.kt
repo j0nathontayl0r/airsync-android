@@ -1339,11 +1339,21 @@ class AirSyncViewModel(
     fun toggleNotificationApp(context: Context, packageName: String, enabled: Boolean) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val current = _notificationApps.value.map {
+                val fromSheet = _notificationApps.value.find { it.packageName == packageName }
+                _notificationApps.value = _notificationApps.value.map {
                     if (it.packageName == packageName) it.copy(isEnabled = enabled) else it
                 }
-                _notificationApps.value = current
-                repository.saveNotificationApps(current)
+                // Update only this package inside one transaction, so a stale sheet copy
+                // cannot overwrite toggles made from the Mac since the sheet loaded.
+                repository.updateNotificationApps { apps ->
+                    if (apps.any { it.packageName == packageName }) {
+                        apps.map { if (it.packageName == packageName) it.copy(isEnabled = enabled) else it }
+                    } else if (fromSheet != null) {
+                        apps + fromSheet.copy(isEnabled = enabled)
+                    } else {
+                        apps
+                    }
+                }
             } catch (e: Exception) {
                 Log.e("AirSyncViewModel", "Failed to toggle notification app: ${e.message}")
             }
