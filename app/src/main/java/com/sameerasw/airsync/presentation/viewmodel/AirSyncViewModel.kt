@@ -26,7 +26,9 @@ import com.sameerasw.airsync.utils.ShortcutUtil
 import com.sameerasw.airsync.utils.SyncManager
 import com.sameerasw.airsync.utils.discovery.DiscoveryOrchestrator
 import com.sameerasw.airsync.utils.WebSocketUtil
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -1322,14 +1324,21 @@ class AirSyncViewModel(
     val notificationApps: StateFlow<List<com.sameerasw.airsync.domain.model.NotificationApp>> =
         _notificationApps.asStateFlow()
 
+    // At most one store collector, replaced on each load so reopening the sheet never stacks them.
+    private var notificationAppsJob: Job? = null
+
     fun loadNotificationApps(context: Context) {
-        viewModelScope.launch(Dispatchers.IO) {
+        notificationAppsJob?.cancel()
+        notificationAppsJob = viewModelScope.launch(Dispatchers.IO) {
             try {
                 val installed = com.sameerasw.airsync.utils.AppUtil.getInstalledApps(context)
-                val saved = repository.getNotificationApps().first()
-                val merged =
-                    com.sameerasw.airsync.utils.AppUtil.mergeWithSavedApps(installed, saved)
-                _notificationApps.value = merged
+                // Follow the store so an open sheet reflects Mac, BLE and sync writes live.
+                repository.getNotificationApps().distinctUntilChanged().collect { saved ->
+                    _notificationApps.value =
+                        com.sameerasw.airsync.utils.AppUtil.mergeWithSavedApps(installed, saved)
+                }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e("AirSyncViewModel", "Failed to load notification apps: ${e.message}")
             }
