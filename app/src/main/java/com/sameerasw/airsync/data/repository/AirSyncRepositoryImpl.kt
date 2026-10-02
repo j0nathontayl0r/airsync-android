@@ -126,6 +126,12 @@ class AirSyncRepositoryImpl(
         return dataStoreManager.getNotificationApps()
     }
 
+    override suspend fun updateNotificationApps(
+        transform: (List<NotificationApp>) -> List<NotificationApp>
+    ): List<NotificationApp> {
+        return dataStoreManager.updateNotificationApps(transform)
+    }
+
     override suspend fun updateLastSyncTime(timestamp: Long) {
         dataStoreManager.updateLastSyncTime(timestamp)
     }
