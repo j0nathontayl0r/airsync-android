@@ -3,11 +3,13 @@ package com.sameerasw.airsync.utils
 import FileBrowserUtil
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.util.Log
 import android.widget.Toast
 import com.sameerasw.airsync.BuildConfig
 import com.sameerasw.airsync.data.local.DataStoreManager
 import com.sameerasw.airsync.data.repository.AirSyncRepositoryImpl
+import com.sameerasw.airsync.domain.model.NotificationApp
 import com.sameerasw.airsync.service.MediaNotificationListener
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -765,20 +767,37 @@ object WebSocketMessageHandler {
                 val dataStoreManager = DataStoreManager(context)
                 val repository = AirSyncRepositoryImpl(dataStoreManager)
 
-                // Get current apps
-                val currentApps = repository.getNotificationApps().first().toMutableList()
+                // Look up the package before the transaction (null if not installed)
+                val pm = context.packageManager
+                val appInfo = try {
+                    pm.getApplicationInfo(packageName, 0)
+                } catch (_: Exception) {
+                    null
+                }
+                val installedApp = appInfo?.let {
+                    NotificationApp(
+                        packageName = packageName,
+                        appName = pm.getApplicationLabel(it).toString(),
+                        isEnabled = newState,
+                        isSystemApp = (it.flags and (ApplicationInfo.FLAG_SYSTEM or ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0
+                    )
+                }
 
-                // Find and update the app
-                val appIndex = currentApps.indexOfFirst { it.packageName == packageName }
+                // Update the stored app, or add it if installed but not yet saved
+                val savedApps = repository.updateNotificationApps { apps ->
+                    when {
+                        apps.any { it.packageName == packageName } -> apps.map {
+                            if (it.packageName == packageName) it.copy(isEnabled = newState) else it
+                        }
 
-                if (appIndex != -1) {
-                    // Update existing app
-                    val updatedApp = currentApps[appIndex].copy(isEnabled = newState)
-                    currentApps[appIndex] = updatedApp
+                        installedApp != null -> apps + installedApp
+                        else -> apps
+                    }
+                }
+                val applied =
+                    savedApps.any { it.packageName == packageName && it.isEnabled == newState }
 
-                    // Save updated apps
-                    repository.saveNotificationApps(currentApps)
-
+                if (applied) {
                     Log.d(
                         TAG,
                         "Successfully updated notification state for $packageName to $newState"
