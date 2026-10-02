@@ -1329,6 +1329,26 @@ class AirSyncViewModel(
     // At most one store collector, replaced on each load so reopening the sheet never stacks them.
     private var notificationAppsJob: Job? = null
 
+    // One debounced push of phone-side toggles to the Mac, restarted on each tap.
+    private var notificationSyncJob: Job? = null
+
+    /**
+     * Push the phone's toggles to the Mac ~500 ms after the last phone-side change.
+     * Call only after the store write has returned: the send reads `listening` from the store.
+     * Sends the full installed list because the Mac removes any app missing from `appIcons`.
+     */
+    private fun scheduleNotificationSync(context: Context) {
+        notificationSyncJob?.cancel()
+        notificationSyncJob = viewModelScope.launch {
+            delay(500)
+            SyncManager.sendOptimizedAppIcons(
+                context,
+                _notificationApps.value.map { it.packageName },
+                fetchIcons = false
+            )
+        }
+    }
+
     fun loadNotificationApps(context: Context) {
         notificationAppsJob?.cancel()
         notificationAppsJob = viewModelScope.launch(Dispatchers.IO) {
@@ -1369,6 +1389,7 @@ class AirSyncViewModel(
                         apps
                     }
                 }
+                scheduleNotificationSync(context)
             } catch (e: Exception) {
                 Log.e("AirSyncViewModel", "Failed to toggle notification app: ${e.message}")
             }
@@ -1383,6 +1404,7 @@ class AirSyncViewModel(
             try {
                 _notificationApps.value = apps
                 repository.saveNotificationApps(apps)
+                scheduleNotificationSync(context)
             } catch (e: Exception) {
                 Log.e("AirSyncViewModel", "Failed to save all notification apps: ${e.message}")
             }
