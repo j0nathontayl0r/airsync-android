@@ -1338,14 +1338,18 @@ class AirSyncViewModel(
      * Sends the full installed list because the Mac removes any app missing from `appIcons`.
      */
     private fun scheduleNotificationSync(context: Context) {
-        notificationSyncJob?.cancel()
-        notificationSyncJob = viewModelScope.launch {
-            delay(500)
-            SyncManager.sendOptimizedAppIcons(
-                context,
-                _notificationApps.value.map { it.packageName },
-                fetchIcons = false
-            )
+        val appContext = context.applicationContext
+        // Callers run on IO threads; hop to Main so cancel-and-assign is serialised.
+        viewModelScope.launch {
+            notificationSyncJob?.cancel()
+            notificationSyncJob = launch {
+                delay(500)
+                SyncManager.sendOptimizedAppIcons(
+                    appContext,
+                    _notificationApps.value.map { it.packageName },
+                    fetchIcons = false
+                )
+            }
         }
     }
 
