@@ -29,9 +29,11 @@ import com.sameerasw.airsync.utils.WebSocketUtil
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -1333,9 +1335,13 @@ class AirSyncViewModel(
             try {
                 val installed = com.sameerasw.airsync.utils.AppUtil.getInstalledApps(context)
                 // Follow the store so an open sheet reflects Mac, BLE and sync writes live.
-                repository.getNotificationApps().distinctUntilChanged().collect { saved ->
+                // Throttled to ~10 redraws/s: a Mac "Disable all" writes once per app (~240 in
+                // ~5 s). conflate keeps only the latest value during the delay, so the first
+                // value applies at once and the last value of a burst is never dropped.
+                repository.getNotificationApps().distinctUntilChanged().conflate().collect { saved ->
                     _notificationApps.value =
                         com.sameerasw.airsync.utils.AppUtil.mergeWithSavedApps(installed, saved)
+                    delay(100)
                 }
             } catch (e: CancellationException) {
                 throw e
