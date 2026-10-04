@@ -139,36 +139,42 @@ object BleTransportBridge {
                                 com.sameerasw.airsync.data.local.DataStoreManager.getInstance(
                                     context
                                 )
-                            val currentApps =
-                                dataStoreManager.getNotificationApps().first().toMutableList()
-                            val idx = currentApps.indexOfFirst { it.packageName == pkg }
-                            if (idx != -1) {
-                                currentApps[idx] = currentApps[idx].copy(
-                                    isEnabled = state,
-                                    lastUpdated = System.currentTimeMillis()
-                                )
-                                dataStoreManager.saveNotificationApps(currentApps)
+                            val isSystemApp = try {
+                                val applicationInfo =
+                                    context.packageManager.getApplicationInfo(pkg, 0)
+                                (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+                            } catch (_: Exception) {
+                                false
+                            }
+                            val now = System.currentTimeMillis()
+                            var existed = false
+                            dataStoreManager.updateNotificationApps { apps ->
+                                val idx = apps.indexOfFirst { it.packageName == pkg }
+                                existed = idx != -1
+                                if (existed) {
+                                    apps.map {
+                                        if (it.packageName == pkg) {
+                                            it.copy(isEnabled = state, lastUpdated = now)
+                                        } else {
+                                            it
+                                        }
+                                    }
+                                } else {
+                                    apps + com.sameerasw.airsync.domain.model.NotificationApp(
+                                        packageName = pkg,
+                                        appName = pkg,
+                                        isEnabled = state,
+                                        isSystemApp = isSystemApp,
+                                        lastUpdated = now
+                                    )
+                                }
+                            }
+                            if (existed) {
                                 Log.d(
                                     TAG,
                                     "Successfully toggled app notification preference via BLE for $pkg to $state"
                                 )
                             } else {
-                                val isSystemApp = try {
-                                    val applicationInfo =
-                                        context.packageManager.getApplicationInfo(pkg, 0)
-                                    (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
-                                } catch (_: Exception) {
-                                    false
-                                }
-                                val newApp = com.sameerasw.airsync.domain.model.NotificationApp(
-                                    packageName = pkg,
-                                    appName = pkg,
-                                    isEnabled = state,
-                                    isSystemApp = isSystemApp,
-                                    lastUpdated = System.currentTimeMillis()
-                                )
-                                currentApps.add(newApp)
-                                dataStoreManager.saveNotificationApps(currentApps)
                                 Log.d(
                                     TAG,
                                     "Saved new app notification preference via BLE for $pkg to $state"

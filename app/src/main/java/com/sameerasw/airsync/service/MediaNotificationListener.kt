@@ -848,7 +848,6 @@ class MediaNotificationListener : NotificationListenerService() {
 
     private suspend fun saveNewAppToPreferences(packageName: String, appName: String) {
         try {
-            val currentApps = dataStoreManager.getNotificationApps().first().toMutableList()
             val isSystemApp = try {
                 val applicationInfo = packageManager.getApplicationInfo(packageName, 0)
                 (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
@@ -864,8 +863,9 @@ class MediaNotificationListener : NotificationListenerService() {
                 lastUpdated = System.currentTimeMillis()
             )
 
-            currentApps.add(newApp)
-            dataStoreManager.saveNotificationApps(currentApps)
+            dataStoreManager.updateNotificationApps { apps ->
+                if (apps.any { it.packageName == packageName }) apps else apps + newApp
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Error saving new app to preferences", e)
         }

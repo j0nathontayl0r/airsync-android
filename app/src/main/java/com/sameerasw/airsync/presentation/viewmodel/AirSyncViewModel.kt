@@ -26,10 +26,14 @@ import com.sameerasw.airsync.utils.ShortcutUtil
 import com.sameerasw.airsync.utils.SyncManager
 import com.sameerasw.airsync.utils.discovery.DiscoveryOrchestrator
 import com.sameerasw.airsync.utils.WebSocketUtil
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -1322,14 +1326,49 @@ class AirSyncViewModel(
     val notificationApps: StateFlow<List<com.sameerasw.airsync.domain.model.NotificationApp>> =
         _notificationApps.asStateFlow()
 
+    // At most one store collector, replaced on each load so reopening the sheet never stacks them.
+    private var notificationAppsJob: Job? = null
+
+    // One debounced push of phone-side toggles to the Mac, restarted on each tap.
+    private var notificationSyncJob: Job? = null
+
+    /**
+     * Push the phone's toggles to the Mac ~500 ms after the last phone-side change.
+     * Call only after the store write has returned: the send reads `listening` from the store.
+     * Sends the full installed list because the Mac removes any app missing from `appIcons`.
+     */
+    private fun scheduleNotificationSync(context: Context) {
+        val appContext = context.applicationContext
+        // Callers run on IO threads; hop to Main so cancel-and-assign is serialised.
+        viewModelScope.launch {
+            notificationSyncJob?.cancel()
+            notificationSyncJob = launch {
+                delay(500)
+                SyncManager.sendOptimizedAppIcons(
+                    appContext,
+                    _notificationApps.value.map { it.packageName },
+                    fetchIcons = false
+                )
+            }
+        }
+    }
+
     fun loadNotificationApps(context: Context) {
-        viewModelScope.launch(Dispatchers.IO) {
+        notificationAppsJob?.cancel()
+        notificationAppsJob = viewModelScope.launch(Dispatchers.IO) {
             try {
                 val installed = com.sameerasw.airsync.utils.AppUtil.getInstalledApps(context)
-                val saved = repository.getNotificationApps().first()
-                val merged =
-                    com.sameerasw.airsync.utils.AppUtil.mergeWithSavedApps(installed, saved)
-                _notificationApps.value = merged
+                // Follow the store so an open sheet reflects Mac, BLE and sync writes live.
+                // Throttled to ~10 redraws/s: a Mac "Disable all" writes once per app (~240 in
+                // ~5 s). conflate keeps only the latest value during the delay, so the first
+                // value applies at once and the last value of a burst is never dropped.
+                repository.getNotificationApps().distinctUntilChanged().conflate().collect { saved ->
+                    _notificationApps.value =
+                        com.sameerasw.airsync.utils.AppUtil.mergeWithSavedApps(installed, saved)
+                    delay(100)
+                }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e("AirSyncViewModel", "Failed to load notification apps: ${e.message}")
             }
@@ -1339,11 +1378,22 @@ class AirSyncViewModel(
     fun toggleNotificationApp(context: Context, packageName: String, enabled: Boolean) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val current = _notificationApps.value.map {
+                val fromSheet = _notificationApps.value.find { it.packageName == packageName }
+                _notificationApps.value = _notificationApps.value.map {
                     if (it.packageName == packageName) it.copy(isEnabled = enabled) else it
                 }
-                _notificationApps.value = current
-                repository.saveNotificationApps(current)
+                // Update only this package inside one transaction, so a stale sheet copy
+                // cannot overwrite toggles made from the Mac since the sheet loaded.
+                repository.updateNotificationApps { apps ->
+                    if (apps.any { it.packageName == packageName }) {
+                        apps.map { if (it.packageName == packageName) it.copy(isEnabled = enabled) else it }
+                    } else if (fromSheet != null) {
+                        apps + fromSheet.copy(isEnabled = enabled)
+                    } else {
+                        apps
+                    }
+                }
+                scheduleNotificationSync(context)
             } catch (e: Exception) {
                 Log.e("AirSyncViewModel", "Failed to toggle notification app: ${e.message}")
             }
@@ -1358,6 +1408,7 @@ class AirSyncViewModel(
             try {
                 _notificationApps.value = apps
                 repository.saveNotificationApps(apps)
+                scheduleNotificationSync(context)
             } catch (e: Exception) {
                 Log.e("AirSyncViewModel", "Failed to save all notification apps: ${e.message}")
             }

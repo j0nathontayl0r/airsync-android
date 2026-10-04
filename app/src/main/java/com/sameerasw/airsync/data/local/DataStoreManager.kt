@@ -537,65 +537,16 @@ class DataStoreManager(private val context: Context) {
         }
 
     suspend fun saveNotificationApps(apps: List<NotificationApp>) {
-        context.dataStore.edit { preferences ->
-            // Clear existing app preferences
-            val keysToRemove = preferences.asMap().keys.filter { it.name.startsWith("app_") }
-            keysToRemove.forEach { preferences.remove(it) }
-
-            // Save new app preferences
-            apps.forEach { app ->
-                val enabledKey = booleanPreferencesKey("app_${app.packageName}_enabled")
-                val nameKey = stringPreferencesKey("app_${app.packageName}_name")
-                val systemKey = booleanPreferencesKey("app_${app.packageName}_system")
-                val updatedKey = stringPreferencesKey("app_${app.packageName}_updated")
-
-                preferences[enabledKey] = app.isEnabled
-                preferences[nameKey] = app.appName
-                preferences[systemKey] = app.isSystemApp
-                preferences[updatedKey] = app.lastUpdated.toString()
-            }
-        }
+        context.dataStore.edit { writeNotificationApps(it, apps) }
     }
 
-    fun getNotificationApps(): Flow<List<NotificationApp>> {
-        return context.dataStore.data.map { preferences ->
-            val apps = mutableListOf<NotificationApp>()
-            val packageNames = mutableSetOf<String>()
+    fun getNotificationApps(): Flow<List<NotificationApp>> =
+        context.dataStore.data.map(::readNotificationApps)
 
-            // Extract package names from preference keys
-            preferences.asMap().keys.forEach { key ->
-                if (key.name.startsWith("app_") && key.name.endsWith("_enabled")) {
-                    val packageName = key.name.removePrefix("app_").removeSuffix("_enabled")
-                    packageNames.add(packageName)
-                }
-            }
-
-            // Build app objects from preferences
-            packageNames.forEach { packageName ->
-                val enabledKey = booleanPreferencesKey("app_${packageName}_enabled")
-                val nameKey = stringPreferencesKey("app_${packageName}_name")
-                val systemKey = booleanPreferencesKey("app_${packageName}_system")
-                val updatedKey = stringPreferencesKey("app_${packageName}_updated")
-
-                val isEnabled = preferences[enabledKey] != false
-                val appName = preferences[nameKey] ?: packageName
-                val isSystemApp = preferences[systemKey] == true
-                val lastUpdated = preferences[updatedKey]?.toLongOrNull() ?: 0L
-
-                apps.add(
-                    NotificationApp(
-                        packageName = packageName,
-                        appName = appName,
-                        isEnabled = isEnabled,
-                        isSystemApp = isSystemApp,
-                        lastUpdated = lastUpdated
-                    )
-                )
-            }
-
-            apps.sortedBy { it.appName }
-        }
-    }
+    // Atomic because Context.dataStore is the process's only DataStore and serialises every edit.
+    suspend fun updateNotificationApps(
+        transform: (List<NotificationApp>) -> List<NotificationApp>
+    ): List<NotificationApp> = context.dataStore.updateNotificationApps(transform)
 
     suspend fun setDeveloperMode(enabled: Boolean) {
         context.dataStore.edit { preferences ->
